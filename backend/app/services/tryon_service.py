@@ -26,11 +26,102 @@ def update_job(job_id: str, **kwargs):
 
 async def run_tryon_async(job_id, user_photo_b64, garment_image_url, garment_category="top"):
     update_job(job_id, status="processing")
+    failures = []
+
+    # 1st choice: IDM-VTON on AMD MI300X (hackathon primary engine)
+    if settings.IDM_VTON_URL:
+        try:
+            result_url = await _idm_vton_tryon(user_photo_b64, garment_image_url, garment_category)
+            update_job(job_id, status="done", result_url=result_url,
+                       engine="IDM-VTON @ AMD MI300X")
+            return
+        except Exception as e:
+            failures.append(f"AMD bridge: {e}")
+
+    # 2nd choice: IDM-VTON via gradio — either your AMD hackathon notebook
+    # (TRYON_HF_SPACE=https://xxx.gradio.live) or the public HF Space demo.
+    if settings.TRYON_HF_SPACE:
+        engine_label = settings.TRYON_ENGINE_LABEL or (
+            "IDM-VTON @ AMD GPU (hackathon instance)"
+            if settings.TRYON_HF_SPACE.startswith("http")
+            else "IDM-VTON @ HuggingFace (demo)")
+        try:
+            result_url = await _hf_space_tryon(user_photo_b64, garment_image_url, garment_category)
+            update_job(job_id, status="done", result_url=result_url,
+                       engine=engine_label)
+            return
+        except Exception as e:
+            failures.append(f"IDM-VTON gradio: {e}")
+
+    # Fallback: FLUX Kontext via Fireworks
     try:
         result_url = await _flux_tryon(user_photo_b64, garment_image_url, garment_category)
-        update_job(job_id, status="done", result_url=result_url)
+        update_job(job_id, status="done", result_url=result_url,
+                   engine="FLUX Kontext @ Fireworks")
     except Exception as e:
-        update_job(job_id, status="failed", error=str(e))
+        failures.append(f"FLUX: {e}")
+        update_job(job_id, status="failed",
+                   error=" | ".join(failures))
+
+
+async def _hf_space_tryon(user_photo_b64, garment_image_url, garment_category):
+    """Real IDM-VTON via the public HuggingFace Space (gradio_client is sync,
+    so run it in a worker thread)."""
+    return await asyncio.to_thread(
+        _hf_space_tryon_sync, user_photo_b64, garment_image_url, garment_category
+    )
+
+
+def _hf_space_tryon_sync(user_photo_b64, garment_image_url, garment_category):
+    import base64
+    import os
+    import tempfile
+    from gradio_client import Client, handle_file
+
+    client = Client(settings.TRYON_HF_SPACE,
+                    hf_token=settings.HF_TOKEN or None)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        person_path = os.path.join(tmp, "person.png")
+        with open(person_path, "wb") as f:
+            f.write(base64.b64decode(user_photo_b64))
+
+        garment_path = os.path.join(tmp, "garment.png")
+        r = httpx.get(garment_image_url, timeout=30, follow_redirects=True)
+        r.raise_for_status()
+        with open(garment_path, "wb") as f:
+            f.write(r.content)
+
+        result = client.predict(
+            dict={"background": handle_file(person_path), "layers": [], "composite": None},
+            garm_img=handle_file(garment_path),
+            garment_des=garment_category,
+            is_checked=True,       # auto-mask
+            is_checked_crop=True,  # auto crop/resize
+            denoise_steps=30,
+            seed=42,
+            api_name="/tryon",
+        )
+
+        out = result[0]
+        out_path = out["path"] if isinstance(out, dict) else out
+        with open(out_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode()
+
+    return f"data:image/png;base64,{image_b64}"
+
+
+async def _idm_vton_tryon(user_photo_b64, garment_image_url, garment_category):
+    payload = {
+        "person_b64":   user_photo_b64,
+        "garment_url":  garment_image_url,
+        "garment_desc": garment_category,
+    }
+    async with httpx.AsyncClient(timeout=300.0) as client:  # SDXL inference takes 30-90s
+        response = await client.post(f"{settings.IDM_VTON_URL}/tryon", json=payload)
+        response.raise_for_status()
+        data = response.json()
+    return f"data:image/png;base64,{data['image_b64']}"
 
 async def _flux_tryon(user_photo_b64, garment_image_url, garment_category):
     if not settings.FIREWORKS_API_KEY:

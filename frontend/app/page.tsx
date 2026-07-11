@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -17,6 +17,7 @@ type SizeResult = {
 type TryOnResult = {
     result_url: string | null;
     status: string;
+    engine?: string | null;
 };
 
 export default function TwinFitApp() {
@@ -40,6 +41,36 @@ export default function TwinFitApp() {
     const [userPhoto, setUserPhoto] = useState<string | null>(null);
     const [tryOnResult, setTryOnResult] = useState<TryOnResult | null>(null);
     const [jobId, setJobId] = useState<string | null>(null);
+
+    const [embedMode, setEmbedMode] = useState(false);
+
+    // B2B embed: widget.js opens this app with ?garment=<img>&brand=<brand>&embed=1
+    useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        const garment = params.get("garment");
+        const brand = params.get("brand");
+        if (brand) setMeasurements(p => ({ ...p, brand }));
+        if (params.get("embed") === "1") setEmbedMode(true);
+        if (garment) {
+            setGarmentUrl(garment);
+            // Analyze the garment in the background while the user fills in
+            // measurements — no URL pasting needed in the embed flow.
+            fetch(`${API_BASE}/api/garment/analyze`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ image_url: garment }),
+            })
+                .then(r => r.json())
+                .then(setGarmentMeta)
+                .catch(() => { });
+        }
+    }, []);
+
+    // Embed flow: once size is known and garment analysis has arrived, skip
+    // the garment step entirely.
+    useEffect(() => {
+        if (embedMode && step === "garment" && garmentMeta) setStep("tryon");
+    }, [embedMode, step, garmentMeta]);
 
     // ─── Handlers ─────────────────────────────────────────────────────────
 
@@ -94,13 +125,26 @@ export default function TwinFitApp() {
     function handlePhotoUpload(e: React.ChangeEvent<HTMLInputElement>) {
         const file = e.target.files?.[0];
         if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-            // Strip the data:image/jpeg;base64, prefix — backend wants raw base64
-            const b64 = (reader.result as string).split(",")[1];
+        // Normalize ANY photo (HEIC from iPhone, huge DSLR files, PNG...) to a
+        // reasonably-sized JPEG via canvas — the try-on models need this.
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+            const MAX = 1024;
+            const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+            const b64 = canvas.toDataURL("image/jpeg", 0.9).split(",")[1];
             setUserPhoto(b64);
+            URL.revokeObjectURL(url);
         };
-        reader.readAsDataURL(file);
+        img.onerror = () => {
+            URL.revokeObjectURL(url);
+            alert("Couldn't read that image. If it's an iPhone HEIC photo, convert it to JPG first (or screenshot it), then upload.");
+        };
+        img.src = url;
     }
 
     async function handleStartTryOn() {
@@ -150,15 +194,17 @@ export default function TwinFitApp() {
 
     return (
         <div className="min-h-screen bg-gray-50 font-sans">
-            {/* Header */}
-            <header className="bg-[#1E3A5F] text-white px-6 py-4 flex items-center justify-between">
+            {/* Header (compact in embed mode) */}
+            <header className={`bg-[#1E3A5F] text-white px-6 flex items-center justify-between ${embedMode ? "py-2" : "py-4"}`}>
                 <div>
                     <h1 className="text-2xl font-bold tracking-tight">TwinFit</h1>
                     <p className="text-blue-200 text-xs">AI Virtual Try-On · India's Fit Problem, Solved</p>
                 </div>
-                <span className="text-xs bg-blue-800 px-3 py-1 rounded-full">
-                    AMD Developer Hackathon
-                </span>
+                {!embedMode && (
+                    <span className="text-xs bg-blue-800 px-3 py-1 rounded-full">
+                        AMD Developer Hackathon
+                    </span>
+                )}
             </header>
 
             {/* Progress bar */}
@@ -267,27 +313,42 @@ export default function TwinFitApp() {
                             )}
                         </div>
 
-                        {/* Garment URL input */}
-                        <div className="bg-white rounded-xl shadow p-6 space-y-4">
-                            <h2 className="text-xl font-bold text-[#1E3A5F]">Paste Garment Image URL</h2>
-                            <p className="text-sm text-gray-500">
-                                Paste any Myntra/AJIO/Zara product image URL. Gemma AI will analyze it.
-                            </p>
-                            <input
-                                type="url"
-                                placeholder="https://assets.myntra.com/..."
-                                value={garmentUrl}
-                                onChange={e => setGarmentUrl(e.target.value)}
-                                className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                            />
-                            <button
-                                onClick={handleGarmentAnalyze}
-                                disabled={loading || !garmentUrl}
-                                className="w-full bg-[#1E3A5F] text-white py-3 rounded-lg font-semibold hover:bg-blue-900 transition disabled:opacity-50"
-                            >
-                                {loading ? "Analyzing garment with Gemma AI…" : "Analyze Garment →"}
-                            </button>
-                        </div>
+                        {embedMode ? (
+                            /* Embed flow: garment came from the retailer's page —
+                               show it while background analysis finishes. */
+                            <div className="bg-white rounded-xl shadow p-6 space-y-4 text-center">
+                                <h2 className="text-xl font-bold text-[#1E3A5F]">This Garment</h2>
+                                {garmentUrl && (
+                                    <img src={garmentUrl} alt="Selected garment"
+                                        className="mx-auto max-h-64 rounded-xl object-contain" />
+                                )}
+                                <p className="text-sm text-gray-500 animate-pulse">
+                                    Analyzing garment with AI… you'll continue automatically
+                                </p>
+                            </div>
+                        ) : (
+                            /* Standalone flow: user pastes a garment image URL */
+                            <div className="bg-white rounded-xl shadow p-6 space-y-4">
+                                <h2 className="text-xl font-bold text-[#1E3A5F]">Paste Garment Image URL</h2>
+                                <p className="text-sm text-gray-500">
+                                    Paste any Myntra/AJIO/Zara product image URL (right-click the product photo → Copy Image Address).
+                                </p>
+                                <input
+                                    type="url"
+                                    placeholder="https://assets.myntra.com/..."
+                                    value={garmentUrl}
+                                    onChange={e => setGarmentUrl(e.target.value)}
+                                    className="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                                />
+                                <button
+                                    onClick={handleGarmentAnalyze}
+                                    disabled={loading || !garmentUrl}
+                                    className="w-full bg-[#1E3A5F] text-white py-3 rounded-lg font-semibold hover:bg-blue-900 transition disabled:opacity-50"
+                                >
+                                    {loading ? "Analyzing garment with AI…" : "Analyze Garment →"}
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -343,7 +404,14 @@ export default function TwinFitApp() {
                 {/* ── Step 4: Result ── */}
                 {step === "result" && tryOnResult && (
                     <div className="bg-white rounded-xl shadow p-6 space-y-4">
-                        <h2 className="text-xl font-bold text-[#1E3A5F]">Your Virtual Try-On</h2>
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-xl font-bold text-[#1E3A5F]">Your Virtual Try-On</h2>
+                            {tryOnResult.engine && (
+                                <span className="text-xs bg-red-50 text-red-700 border border-red-200 px-2 py-1 rounded-full">
+                                    {tryOnResult.engine}
+                                </span>
+                            )}
+                        </div>
                         {tryOnResult.result_url ? (
                             <img
                                 src={tryOnResult.result_url}
@@ -380,7 +448,7 @@ export default function TwinFitApp() {
                 {/* Footer stat */}
                 <div className="text-center text-xs text-gray-400 pb-4">
                     Indian fashion returns: 25–35% · TwinFit targets a 20% reduction
-                    <br />Powered by Gemma 3 on AMD GPU · Built for AMD Developer Hackathon ACT II
+                    <br />IDM-VTON try-on · AI garment vision · Built for AMD Developer Hackathon ACT II
                 </div>
             </main>
         </div>

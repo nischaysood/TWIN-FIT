@@ -55,3 +55,4 @@ class TryOnResultResponse(BaseModel):
     status:       TryOnStatus
     result_url:   Optional[str] = None
     error:        Optional[str] = None
+    engine:       Optional[str] = None  # "IDM-VTON @ AMD MI300X" or "FLUX Kontext @ Fireworks"

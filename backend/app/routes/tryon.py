@@ -30,4 +30,5 @@ def get_tryon_status(job_id: str):
         status=job["status"],
         result_url=job.get("result_url"),
         error=job.get("error"),
+        engine=job.get("engine"),
     )

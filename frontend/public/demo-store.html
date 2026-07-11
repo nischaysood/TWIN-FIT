@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nayra Fashion — Velvet Wrap Top (Demo Retailer)</title>
+<style>
+  * { margin:0; box-sizing:border-box; font-family:-apple-system,system-ui,sans-serif; }
+  body { background:#faf7f2; color:#222; }
+  header { background:#fff; padding:16px 32px; display:flex; justify-content:space-between;
+           align-items:center; border-bottom:1px solid #eee; }
+  .logo { font-size:22px; font-weight:800; letter-spacing:-0.5px; }
+  .logo span { color:#b5484d; }
+  nav { display:flex; gap:24px; font-size:14px; color:#666; }
+  .banner { background:#1E3A5F; color:#fff; text-align:center; padding:6px; font-size:12px; }
+  main { max-width:1000px; margin:40px auto; display:grid;
+         grid-template-columns:1fr 1fr; gap:48px; padding:0 24px; }
+  .product-img img { width:100%; border-radius:12px; box-shadow:0 4px 24px rgba(0,0,0,.08); }
+  h1 { font-size:26px; margin-bottom:4px; }
+  .brand { color:#888; font-size:14px; margin-bottom:16px; }
+  .price { font-size:24px; font-weight:800; }
+  .mrp { color:#999; text-decoration:line-through; font-size:15px; margin-left:8px; }
+  .off { color:#2e9e5b; font-size:15px; margin-left:8px; font-weight:600; }
+  .sizes { display:flex; gap:10px; margin:20px 0; }
+  .sizes button { width:44px; height:44px; border-radius:50%; border:1px solid #ccc;
+                  background:#fff; cursor:pointer; font-weight:600; }
+  .sizes button:hover { border-color:#b5484d; color:#b5484d; }
+  .cta { display:flex; gap:12px; margin-top:8px; }
+  .cta .cart { flex:1; padding:14px; background:#b5484d; color:#fff; border:none;
+               border-radius:8px; font-size:15px; font-weight:700; cursor:pointer; }
+  .cta .wish { padding:14px 18px; background:#fff; border:1px solid #ccc;
+               border-radius:8px; cursor:pointer; }
+  .note { margin-top:28px; padding:14px; background:#fff; border:1px dashed #b5484d;
+          border-radius:8px; font-size:13px; color:#555; }
+</style>
+</head>
+<body>
+  <div class="banner">DEMO RETAILER SITE — showing TwinFit's one-line B2B integration</div>
+  <header>
+    <div class="logo">Nayra<span>Fashion</span></div>
+    <nav><a>Women</a><a>Men</a><a>Ethnic</a><a>Sale</a></nav>
+  </header>
+
+  <main>
+    <div class="product-img">
+      <!-- data-twinfit = the ONLY thing the retailer adds to their markup -->
+      <img
+        src="https://raw.githubusercontent.com/yisol/IDM-VTON/main/gradio_demo/example/cloth/04469_00.jpg"
+        alt="Velvet Wrap Top"
+        data-twinfit
+      />
+      <!-- TwinFit "Try It On" button auto-appears here -->
+    </div>
+
+    <div>
+      <h1>Velvet Wrap Top</h1>
+      <div class="brand">Nayra Fashion · Women's Western Wear</div>
+      <div>
+        <span class="price">₹1,299</span>
+        <span class="mrp">₹2,599</span>
+        <span class="off">50% OFF</span>
+      </div>
+      <div class="sizes">
+        <button>XS</button><button>S</button><button>M</button>
+        <button>L</button><button>XL</button>
+      </div>
+      <div class="cta">
+        <button class="cart">ADD TO BAG</button>
+        <button class="wish">♡</button>
+      </div>
+      <div class="note">
+        <strong>Integration shown on this page:</strong><br/>
+        1. <code>&lt;script src=".../widget.js" data-brand="myntra" defer&gt;&lt;/script&gt;</code><br/>
+        2. <code>data-twinfit</code> attribute on the product image.<br/>
+        That's the entire retailer-side work. TwinFit handles sizing + try-on.
+      </div>
+    </div>
+  </main>
+
+  <!-- ═══ TwinFit integration: ONE line ═══ -->
+  <script src="/widget.js" data-brand="myntra" defer></script>
+</body>
+</html>

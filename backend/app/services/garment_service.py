@@ -17,16 +17,24 @@ Required fields:
 }"""
 
 async def analyze_garment(image_url: str) -> dict:
-    if not settings.FIREWORKS_API_KEY:
+    # Prefer a self-hosted OpenAI-compatible endpoint (Gemma 3 on AMD MI300X);
+    # otherwise Fireworks serverless; otherwise mock.
+    if settings.GEMMA_BASE_URL:
+        base_url = settings.GEMMA_BASE_URL.rstrip("/")
+        api_key = settings.GEMMA_API_KEY or "none"
+    elif settings.FIREWORKS_API_KEY:
+        base_url = settings.FIREWORKS_BASE_URL.rstrip("/")
+        api_key = settings.FIREWORKS_API_KEY
+    else:
         return _mock_analysis()
 
     headers = {
-        "Authorization": f"Bearer {settings.FIREWORKS_API_KEY}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {
         "model": settings.GEMMA_MODEL,
-        "max_tokens": 256,
+        "max_tokens": 2048,  # reasoning models spend tokens thinking before the JSON
         "temperature": 0.1,
         "messages": [{
             "role": "user",
@@ -37,9 +45,9 @@ async def analyze_garment(image_url: str) -> dict:
         }]
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
-            f"{settings.FIREWORKS_BASE_URL}/chat/completions",
+            f"{base_url}/chat/completions",
             headers=headers,
             json=payload
         )
@@ -47,18 +55,22 @@ async def analyze_garment(image_url: str) -> dict:
         data = response.json()
 
     raw_text = data["choices"][0]["message"]["content"].strip()
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("```")[1]
-        if raw_text.startswith("json"):
-            raw_text = raw_text[4:]
-    raw_text = raw_text.strip()
-
     try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError:
+        return _extract_json(raw_text)
+    except (json.JSONDecodeError, ValueError):
         result = _mock_analysis()
         result["parse_error"] = True
         return result
+
+
+def _extract_json(text: str) -> dict:
+    """Pull the first JSON object out of a reply that may contain
+    reasoning text, markdown fences, or other noise around it."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("no JSON object found in model reply")
+    return json.loads(text[start:end + 1])
 
 def _mock_analysis() -> dict:
     return {

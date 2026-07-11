@@ -80,6 +80,7 @@ def _build_fit_notes(chest, waist, hip, dims, build, category):
     return f"{build.capitalize()} — " + "; ".join(notes) + "."
 
 def recommend_size(height_cm, weight_kg, chest_cm, waist_cm, hip_cm, brand="generic", category="top"):
+    import math
     brand = brand.lower()
     chart = SIZE_CHARTS.get(brand, SIZE_CHARTS["generic"])
     scores = {}
@@ -87,11 +88,18 @@ def recommend_size(height_cm, weight_kg, chest_cm, waist_cm, hip_cm, brand="gene
         scores[size_label] = _score_size(chest_cm, waist_cm, hip_cm, *dims)
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     best_size, best_score = ranked[0]
-    confidence_pct = round(best_score * 100, 1)
+
+    # Confidence = how decisively the best size beats the others
+    # (softmax over size scores — a probability, not a raw fit score).
+    exps = {s: math.exp(v * 8.0) for s, v in scores.items()}
+    total = sum(exps.values())
+    confidence_pct = round(exps[best_size] / total * 100, 1)
+
     alt_size = ranked[1][0] if len(ranked) > 1 else None
     build = _bmi_note(height_cm, weight_kg)
     fit_notes = _build_fit_notes(chest_cm, waist_cm, hip_cm, chart.get(best_size, ()), build, category)
-    return_risk = "LOW" if confidence_pct >= 80 else "MEDIUM" if confidence_pct >= 60 else "HIGH"
+    # Return risk reflects absolute fit quality (does ANY size fit well?)
+    return_risk = "LOW" if best_score >= 0.75 else "MEDIUM" if best_score >= 0.55 else "HIGH"
     return {
         "recommended_size": best_size,
         "confidence_pct":   confidence_pct,
