@@ -1,0 +1,31 @@
+# Render Blueprint — deploy the TwinFit backend free tier.
+# In Render: New + → Blueprint → point at this repo.
+services:
+  - type: web
+    name: twinfit-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FIREWORKS_API_KEY
+        sync: false          # set in dashboard
+      - key: DATABASE_URL
+        sync: false          # Neon connection string
+      - key: TRYON_HF_SPACE
+        sync: false          # Modal URL when deployed, else yisol/IDM-VTON
+      - key: HF_TOKEN
+        sync: false
+      - key: REQUIRE_API_KEY
+        value: "false"       # flip to true once merchants have keys
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false

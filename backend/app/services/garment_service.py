@@ -32,6 +32,22 @@ async def analyze_garment(image_url: str) -> dict:
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+
+    # Fetch the image ourselves and send it inline as a data URI.
+    # Works identically across Gemini / Fireworks / self-hosted vLLM, and
+    # avoids provider-side URL-fetch limits entirely.
+    image_ref = image_url
+    try:
+        import base64
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            r = await client.get(image_url)
+            r.raise_for_status()
+            mime = r.headers.get("content-type", "image/jpeg").split(";")[0]
+            if mime.startswith("image/"):
+                image_ref = f"data:{mime};base64,{base64.b64encode(r.content).decode()}"
+    except Exception:
+        pass  # fall back to passing the raw URL
+
     payload = {
         "model": settings.GEMMA_MODEL,
         "max_tokens": 2048,  # reasoning models spend tokens thinking before the JSON
@@ -39,7 +55,7 @@ async def analyze_garment(image_url: str) -> dict:
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "image_url", "image_url": {"url": image_url}},
+                {"type": "image_url", "image_url": {"url": image_ref}},
                 {"type": "text", "text": ANALYSIS_PROMPT}
             ]
         }]

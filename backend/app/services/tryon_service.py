@@ -1,39 +1,41 @@
 import asyncio
-import uuid
-from datetime import datetime
+import time
 import httpx
 from app.core.config import settings
-from typing import Optional
 
-_jobs = {}
+# Job persistence lives in job_store (Postgres when configured, memory otherwise)
+from app.services.job_store import create_job, get_job, update_job  # noqa: F401 (re-exported)
+from app.services.storage import store_result_image, storage_enabled
+from app.services.telemetry import log_event
 
-def create_job() -> str:
-    job_id = str(uuid.uuid4())
-    _jobs[job_id] = {
-        "status":     "queued",
-        "result_url": None,
-        "error":      None,
-        "created_at": datetime.utcnow().isoformat(),
-    }
-    return job_id
 
-def get_job(job_id: str) -> Optional[dict]:
-    return _jobs.get(job_id)
+async def run_tryon_async(job_id, user_photo_b64, garment_image_url,
+                          garment_category="top", merchant_id=None):
+    started = time.monotonic()
 
-def update_job(job_id: str, **kwargs):
-    if job_id in _jobs:
-        _jobs[job_id].update(kwargs)
+    def _finish(result_url, engine):
+        # Push the PNG to R2 if configured — URLs beat 2MB base64 blobs
+        if result_url.startswith("data:") and storage_enabled():
+            stored = store_result_image(result_url)
+            if stored:
+                result_url = stored
+        latency = round(time.monotonic() - started, 1)
+        update_job(job_id, status="done", result_url=result_url,
+                   engine=engine, latency_s=latency)
+        log_event("tryon_completed", merchant_id,
+                  engine=engine, latency_s=latency, category=garment_category)
+        from app.core.auth import count_tryon
+        count_tryon(merchant_id)
 
-async def run_tryon_async(job_id, user_photo_b64, garment_image_url, garment_category="top"):
     update_job(job_id, status="processing")
+    log_event("tryon_started", merchant_id, category=garment_category)
     failures = []
 
-    # 1st choice: IDM-VTON on AMD MI300X (hackathon primary engine)
+    # 1st choice: IDM-VTON on our own GPU (AMD box or any bridge deployment)
     if settings.IDM_VTON_URL:
         try:
             result_url = await _idm_vton_tryon(user_photo_b64, garment_image_url, garment_category)
-            update_job(job_id, status="done", result_url=result_url,
-                       engine="IDM-VTON @ AMD MI300X")
+            _finish(result_url, "IDM-VTON @ AMD MI300X")
             return
         except Exception as e:
             failures.append(f"AMD bridge: {e}")
@@ -47,21 +49,67 @@ async def run_tryon_async(job_id, user_photo_b64, garment_image_url, garment_cat
             else "IDM-VTON @ HuggingFace (demo)")
         try:
             result_url = await _hf_space_tryon(user_photo_b64, garment_image_url, garment_category)
-            update_job(job_id, status="done", result_url=result_url,
-                       engine=engine_label)
+            _finish(result_url, engine_label)
             return
         except Exception as e:
             failures.append(f"IDM-VTON gradio: {e}")
 
-    # Fallback: FLUX Kontext via Fireworks
-    try:
-        result_url = await _flux_tryon(user_photo_b64, garment_image_url, garment_category)
-        update_job(job_id, status="done", result_url=result_url,
-                   engine="FLUX Kontext @ Fireworks")
-    except Exception as e:
-        failures.append(f"FLUX: {e}")
-        update_job(job_id, status="failed",
-                   error=" | ".join(failures))
+    # 3rd choice: Gemini image editing (no infra, no cold start — the A/B rival)
+    if settings.GEMMA_API_KEY and settings.GEMINI_IMAGE_MODEL:
+        try:
+            result_url = await _gemini_tryon(user_photo_b64, garment_image_url, garment_category)
+            _finish(result_url, "Gemini Image @ Google")
+            return
+        except Exception as e:
+            failures.append(f"Gemini image: {e}")
+
+    # No engine succeeded — fail honestly.
+    update_job(job_id, status="failed", error=" | ".join(failures) or "no engine configured")
+    log_event("tryon_failed", merchant_id, errors=" | ".join(failures)[:500])
+
+
+async def _gemini_tryon(user_photo_b64, garment_image_url, garment_category):
+    """Try-on via Gemini image editing: person + garment images in,
+    composed image out. Zero infrastructure."""
+    import base64
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
+        r = await c.get(garment_image_url)
+        r.raise_for_status()
+        garment_b64 = base64.b64encode(r.content).decode()
+        garment_mime = r.headers.get("content-type", "image/jpeg").split(";")[0]
+
+    instruction = (
+        f"Virtual try-on. The first image is a person; the second image is a {garment_category}. "
+        "Generate the person wearing this exact garment. Preserve the person's face, hair, "
+        "skin tone, body shape, pose, and the background exactly as in the first image. "
+        "Replace only their clothing. Reproduce the garment's exact color, pattern, neckline, "
+        "sleeves, and details faithfully. Photorealistic e-commerce quality."
+    )
+    body = {
+        "contents": [{"parts": [
+            {"inlineData": {"mimeType": "image/jpeg", "data": user_photo_b64}},
+            {"inlineData": {"mimeType": garment_mime, "data": garment_b64}},
+            {"text": instruction},
+        ]}],
+        "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/"
+           f"{settings.GEMINI_IMAGE_MODEL}:generateContent")
+    headers = {"x-goog-api-key": settings.GEMMA_API_KEY,
+               "Content-Type": "application/json"}
+
+    async with httpx.AsyncClient(timeout=120.0) as c:
+        resp = await c.post(url, headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+
+    for part in data["candidates"][0]["content"]["parts"]:
+        blob = part.get("inlineData") or part.get("inline_data")
+        if blob and blob.get("data"):
+            mime = blob.get("mimeType") or blob.get("mime_type") or "image/png"
+            return f"data:{mime};base64,{blob['data']}"
+    raise RuntimeError("Gemini returned no image part")
 
 
 async def _hf_space_tryon(user_photo_b64, garment_image_url, garment_category):
@@ -76,10 +124,32 @@ def _hf_space_tryon_sync(user_photo_b64, garment_image_url, garment_category):
     import base64
     import os
     import tempfile
+    import time as _time
     from gradio_client import Client, handle_file
 
-    client = Client(settings.TRYON_HF_SPACE,
-                    hf_token=settings.HF_TOKEN or None)
+    # Serverless engines (Modal) cold-start for minutes on first hit.
+    # Knock politely with a long timeout until the server is awake.
+    if settings.TRYON_HF_SPACE.startswith("http"):
+        deadline = _time.monotonic() + 420  # up to 7 minutes
+        while True:
+            try:
+                r = httpx.get(settings.TRYON_HF_SPACE, timeout=120.0,
+                              follow_redirects=True)
+                if r.status_code < 500:
+                    break  # awake
+            except Exception:
+                pass
+            if _time.monotonic() > deadline:
+                raise TimeoutError("try-on engine did not wake up within 7 min")
+            _time.sleep(10)
+
+    try:
+        client = Client(settings.TRYON_HF_SPACE,
+                        hf_token=settings.HF_TOKEN or None,
+                        httpx_kwargs={"timeout": httpx.Timeout(600.0, connect=30.0)})
+    except TypeError:  # older gradio_client without httpx_kwargs
+        client = Client(settings.TRYON_HF_SPACE,
+                        hf_token=settings.HF_TOKEN or None)
 
     with tempfile.TemporaryDirectory() as tmp:
         person_path = os.path.join(tmp, "person.png")

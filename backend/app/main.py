@@ -21,9 +21,19 @@ app.include_router(size.router,    prefix="/api/size",    tags=["Size Recommenda
 app.include_router(garment.router, prefix="/api/garment", tags=["Garment Analysis"])
 app.include_router(tryon.router,   prefix="/api/tryon",   tags=["Virtual Try-On"])
 
+@app.on_event("startup")
+def startup():
+    from app.core.db import init_db, db_enabled
+    from app.core.auth import seed_demo_merchant
+    init_db()
+    seed_demo_merchant()
+    mode = "SaaS (Postgres)" if db_enabled() else "demo (in-memory)"
+    print(f"TwinFit backend started in {mode} mode")
+
+
 @app.get("/")
 def root():
-    return {"status": "TwinFit API is live", "version": "0.1.0"}
+    return {"status": "TwinFit API is live", "version": "0.2.0"}
 
 @app.get("/health")
 def health():
