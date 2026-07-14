@@ -9,16 +9,28 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: FIREWORKS_API_KEY
-        sync: false          # set in dashboard
-      - key: DATABASE_URL
-        sync: false          # Neon connection string
+      # ── Runtime ──
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # ── Garment analysis (Gemini free tier) ──
+      - key: GEMMA_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai
+      - key: GEMMA_MODEL
+        value: models/gemini-3.5-flash
+      - key: GEMMA_API_KEY
+        sync: false          # paste in dashboard
+      # ── Try-on engines ──
       - key: TRYON_HF_SPACE
-        sync: false          # Modal URL when deployed, else yisol/IDM-VTON
+        sync: false          # your Modal URL
+      - key: TRYON_ENGINE_LABEL
+        value: IDM-VTON @ Modal (serverless GPU)
+      - key: GEMINI_IMAGE_MODEL
+        value: models/gemini-3.1-flash-image
       - key: HF_TOKEN
         sync: false
-      - key: REQUIRE_API_KEY
-        value: "false"       # flip to true once merchants have keys
+      # ── Persistence & storage ──
+      - key: DATABASE_URL
+        sync: false          # Neon connection string
       - key: R2_ENDPOINT
         sync: false
       - key: R2_ACCESS_KEY_ID
@@ -28,4 +40,9 @@ services:
       - key: R2_BUCKET
         sync: false
       - key: R2_PUBLIC_BASE_URL
-        sync: false
+        value: ""
+      # ── Multi-tenancy ──
+      - key: REQUIRE_API_KEY
+        value: "false"       # flip true once merchants have keys
+      - key: DEMO_API_KEY
+        value: twinfit-demo
